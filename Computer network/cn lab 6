@@ -1,0 +1,212 @@
+//server
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+void search_record(int client_socket, char *data, char *student_id)
+{
+    char *line;
+    char *copy;
+    char response[BUFFER_SIZE];
+
+    copy = strdup(data);
+    line = strtok(copy, "\n");
+
+    while (line != NULL)
+    {
+        char id[20];
+
+        sscanf(line, "%s", id);
+
+        if (strcmp(id, student_id) == 0)
+        {
+            snprintf(response, sizeof(response),
+                     "Record Found : %s", line);
+
+            write(client_socket, response, strlen(response));
+
+            free(copy);
+            return;
+        }
+
+        line = strtok(NULL, "\n");
+    }
+
+    strcpy(response, "Record Not Found");
+    write(client_socket, response, strlen(response));
+
+    free(copy);
+}
+
+int main()
+{
+    int server_socket, client_socket;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len;
+    pid_t pid;
+
+    char data[BUFFER_SIZE];
+    char student_id[20];
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_socket,
+             (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0)
+    {
+        perror("Bind failed");
+        close(server_socket);
+        exit(1);
+    }
+
+    listen(server_socket, 5);
+
+    printf("Server is running on port %d...\n", PORT);
+
+    while (1)
+    {
+        client_len = sizeof(client_addr);
+
+        client_socket = accept(server_socket,
+                               (struct sockaddr *)&client_addr,
+                               &client_len);
+
+        if (client_socket < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        pid = fork();
+
+        if (pid == 0)
+        {
+            /* Child process */
+
+            close(server_socket);
+
+            memset(data, 0, sizeof(data));
+            memset(student_id, 0, sizeof(student_id));
+
+            /* Receive file data */
+            read(client_socket, data, sizeof(data) - 1);
+
+            /* Receive Student ID */
+            read(client_socket, student_id, sizeof(student_id) - 1);
+
+            search_record(client_socket, data, student_id);
+
+            close(client_socket);
+            exit(0);
+        }
+        else
+        {
+            /* Parent process */
+
+            close(client_socket);
+        }
+    }
+
+    close(server_socket);
+
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+int main()
+{
+    int client_socket;
+    struct sockaddr_in server_addr;
+
+    FILE *file;
+    char data[BUFFER_SIZE];
+    char student_id[20];
+    char response[BUFFER_SIZE];
+
+    client_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (client_socket < 0)
+    {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    if (connect(client_socket,
+                (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0)
+    {
+        perror("Connection failed");
+        close(client_socket);
+        exit(1);
+    }
+
+    /* Read data.txt */
+    file = fopen("data.txt", "r");
+
+    if (file == NULL)
+    {
+        perror("Cannot open data.txt");
+        close(client_socket);
+        exit(1);
+    }
+
+    memset(data, 0, sizeof(data));
+
+    fread(data, 1, sizeof(data) - 1, file);
+
+    fclose(file);
+
+    /* Ask Student ID */
+    printf("Enter Student ID to search : ");
+    scanf("%s", student_id);
+
+    /* Send file data */
+    write(client_socket, data, strlen(data));
+
+    /* Send Student ID */
+    write(client_socket, student_id, strlen(student_id) + 1);
+
+    /* Receive server response */
+    memset(response, 0, sizeof(response));
+
+    read(client_socket, response, sizeof(response) - 1);
+
+    printf("Server Response : %s\n", response);
+
+    close(client_socket);
+
+    return 0;
+}
