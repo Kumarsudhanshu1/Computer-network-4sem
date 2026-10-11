@@ -1,1 +1,550 @@
 
+// udp_server.c
+
+// Replace YOUR_ROLL_NUMBER with your actual roll number.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <errno.h>
+#include <limits.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define ROLL_NUMBER "YOUR_ROLL_NUMBER"
+#define BUFFER_SIZE 2048
+
+int calculate_port(void)
+{
+    int len = strlen(ROLL_NUMBER);
+
+    return 30000 + atoi(ROLL_NUMBER + len - 3);
+}
+
+int calculate_service(void)
+{
+    int len = strlen(ROLL_NUMBER);
+    int a = ROLL_NUMBER[len - 3] - '0';
+    int b = ROLL_NUMBER[len - 2] - '0';
+    int c = ROLL_NUMBER[len - 1] - '0';
+
+    return (a + b + c) % 3;
+}
+
+/* Type A: Text Transformer */
+void process_type_a(char *data, char *response)
+{
+    char *separator = strchr(data, '|');
+
+    if (separator == NULL) {
+        snprintf(response, BUFFER_SIZE, "ERROR: Invalid request");
+        return;
+    }
+
+    *separator = '\0';
+
+    char *command = data;
+    char *text = separator + 1;
+
+    if (strcmp(command, "UP") == 0) {
+
+        for (int i = 0; text[i] != '\0'; i++)
+            text[i] = (char)toupper((unsigned char)text[i]);
+
+    } else if (strcmp(command, "LOW") == 0) {
+
+        for (int i = 0; text[i] != '\0'; i++)
+            text[i] = (char)tolower((unsigned char)text[i]);
+
+    } else if (strcmp(command, "REV") == 0) {
+
+        int len = strlen(text);
+
+        for (int i = 0; i < len / 2; i++) {
+            char temp = text[i];
+            text[i] = text[len - 1 - i];
+            text[len - 1 - i] = temp;
+        }
+
+    } else {
+        snprintf(response, BUFFER_SIZE,
+                 "ERROR: Invalid command");
+        return;
+    }
+
+    snprintf(response, BUFFER_SIZE, "%s", text);
+}
+
+/* Type B: Integer List Processor */
+void process_type_b(char *data, char *response)
+{
+    char *saveptr;
+    char *operation = strtok_r(data, "|", &saveptr);
+    char *count_string = strtok_r(NULL, "|", &saveptr);
+    char *numbers = strtok_r(NULL, "|", &saveptr);
+
+    if (operation == NULL ||
+        count_string == NULL ||
+        numbers == NULL) {
+
+        snprintf(response, BUFFER_SIZE,
+                 "ERROR: Invalid request");
+        return;
+    }
+
+    char *endptr;
+    errno = 0;
+
+    long n = strtol(count_string, &endptr, 10);
+
+    if (errno != 0 || *endptr != '\0' || n < 1 || n > 500) {
+        snprintf(response, BUFFER_SIZE,
+                 "ERROR: Invalid number count");
+        return;
+    }
+
+    long long sum = 0;
+    long long minimum = LLONG_MAX;
+    long long maximum = LLONG_MIN;
+
+    char *number_saveptr;
+    char *token = strtok_r(numbers, " \t", &number_saveptr);
+
+    long count = 0;
+
+    while (token != NULL) {
+
+        errno = 0;
+        endptr = NULL;
+
+        long long value = strtoll(token, &endptr, 10);
+
+        if (errno != 0 || endptr == token || *endptr != '\0') {
+            snprintf(response, BUFFER_SIZE,
+                     "ERROR: Invalid integer");
+            return;
+        }
+
+        if (count >= n) {
+            snprintf(response, BUFFER_SIZE,
+                     "ERROR: More integers than specified");
+            return;
+        }
+
+        if ((value > 0 && sum > LLONG_MAX - value) ||
+            (value < 0 && sum < LLONG_MIN - value)) {
+            snprintf(response, BUFFER_SIZE,
+                     "ERROR: Sum overflow");
+            return;
+        }
+
+        sum += value;
+
+        if (value < minimum)
+            minimum = value;
+
+        if (value > maximum)
+            maximum = value;
+
+        count++;
+
+        token = strtok_r(NULL, " \t", &number_saveptr);
+    }
+
+    if (count != n) {
+        snprintf(response, BUFFER_SIZE,
+                 "ERROR: Incorrect number of integers");
+        return;
+    }
+
+    if (strcmp(operation, "SUM") == 0) {
+
+        snprintf(response, BUFFER_SIZE, "%lld", sum);
+
+    } else if (strcmp(operation, "MAX") == 0) {
+
+        snprintf(response, BUFFER_SIZE, "%lld", maximum);
+
+    } else if (strcmp(operation, "MIN") == 0) {
+
+        snprintf(response, BUFFER_SIZE, "%lld", minimum);
+
+    } else if (strcmp(operation, "AVG") == 0) {
+
+        snprintf(response, BUFFER_SIZE, "%.2f",
+                 (double)sum / n);
+
+    } else {
+
+        snprintf(response, BUFFER_SIZE,
+                 "ERROR: Invalid operation");
+    }
+}
+
+/* Type C: String Statistics */
+void process_type_c(char *data, char *response)
+{
+    int length = strlen(data);
+    int vowels = 0;
+    int consonants = 0;
+    int digits = 0;
+
+    for (int i = 0; data[i] != '\0'; i++) {
+
+        unsigned char ch = (unsigned char)data[i];
+
+        if (isalpha(ch)) {
+
+            char lower = (char)tolower(ch);
+
+            if (lower == 'a' || lower == 'e' ||
+                lower == 'i' || lower == 'o' ||
+                lower == 'u') {
+
+                vowels++;
+
+            } else {
+                consonants++;
+            }
+
+        } else if (isdigit(ch)) {
+            digits++;
+        }
+    }
+
+    snprintf(response, BUFFER_SIZE,
+             "LEN=%d;VOWELS=%d;CONSONANTS=%d;DIGITS=%d",
+             length, vowels, consonants, digits);
+}
+
+int main(void)
+{
+    int server_socket;
+    int port;
+    int service;
+
+    struct sockaddr_in server_address;
+    struct sockaddr_in client_address;
+
+    char buffer[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    socklen_t client_length;
+
+    int roll_length = strlen(ROLL_NUMBER);
+
+    if (roll_length < 3 ||
+        strspn(ROLL_NUMBER, "0123456789") !=
+        (size_t)roll_length) {
+
+        fprintf(stderr,
+                "Error: Configure a valid numeric roll number.\n");
+        return 1;
+    }
+
+    port = calculate_port();
+    service = calculate_service();
+
+    server_socket = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (server_socket < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server_address, 0, sizeof(server_address));
+
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_address.sin_port = htons(port);
+
+    if (bind(server_socket,
+             (struct sockaddr *)&server_address,
+             sizeof(server_address)) < 0) {
+
+        perror("bind");
+        close(server_socket);
+        return 1;
+    }
+
+    printf("Server running on port %d\n", port);
+
+    if (service == 0)
+        printf("Service Type: A - Text Transformer\n");
+    else if (service == 1)
+        printf("Service Type: B - Integer List Processor\n");
+    else
+        printf("Service Type: C - String Statistics\n");
+
+    printf("Waiting for client requests...\n");
+
+    while (1) {
+
+        client_length = sizeof(client_address);
+
+        memset(buffer, 0, sizeof(buffer));
+
+        ssize_t received = recvfrom(
+            server_socket,
+            buffer,
+            sizeof(buffer) - 1,
+            0,
+            (struct sockaddr *)&client_address,
+            &client_length
+        );
+
+        if (received < 0) {
+            perror("recvfrom");
+            continue;
+        }
+
+        buffer[received] = '\0';
+
+        printf("\nClient IP: %s, Port: %d\n",
+               inet_ntoa(client_address.sin_addr),
+               ntohs(client_address.sin_port));
+
+        /*
+         * Validate the roll prefix.
+         */
+        int roll_length = strlen(ROLL_NUMBER);
+
+        if (strncmp(buffer, ROLL_NUMBER, roll_length) != 0 ||
+            buffer[roll_length] != '#') {
+
+            snprintf(response, BUFFER_SIZE,
+                     "ERROR: Unauthorized client");
+
+            sendto(server_socket, response, strlen(response),
+                   0, (struct sockaddr *)&client_address,
+                   client_length);
+
+            printf("Sent response: %s\n", response);
+            continue;
+        }
+
+        /*
+         * Remove the roll number and '#' prefix.
+         */
+        char *data = buffer + roll_length + 1;
+
+        printf("Received message: %s\n", data);
+
+        /*
+         * Handle EXIT.
+         */
+        if (strcmp(data, "EXIT") == 0) {
+
+            snprintf(response, BUFFER_SIZE,
+                     "Server shutting down");
+
+            sendto(server_socket, response, strlen(response),
+                   0, (struct sockaddr *)&client_address,
+                   client_length);
+
+            printf("Sent response: %s\n", response);
+            printf("Server shutting down...\n");
+
+            break;
+        }
+
+        /*
+         * Process the selected service.
+         */
+        if (service == 0) {
+
+            process_type_a(data, response);
+
+        } else if (service == 1) {
+
+            process_type_b(data, response);
+
+        } else {
+
+            process_type_c(data, response);
+        }
+
+        /*
+         * Send the response.
+         */
+        if (sendto(server_socket, response, strlen(response),
+                   0, (struct sockaddr *)&client_address,
+                   client_length) < 0) {
+
+            perror("sendto");
+
+        } else {
+
+            printf("Sent response: %s\n", response);
+        }
+    }
+
+    close(server_socket);
+
+    return 0;
+}
+// udp_client.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 2048
+
+int main(int argc, char *argv[])
+{
+    int client_socket;
+
+    struct sockaddr_in server_address;
+
+    char message[BUFFER_SIZE];
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    socklen_t server_length = sizeof(server_address);
+
+    /*
+     * Check command-line arguments.
+     */
+    if (argc != 3) {
+
+        printf("Usage: %s <server_ip> <roll>\n", argv[0]);
+        return 1;
+    }
+
+    /*
+     * Create UDP socket.
+     */
+    client_socket = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (client_socket < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    /*
+     * Configure server address.
+     */
+    memset(&server_address, 0, sizeof(server_address));
+
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = 0;  /* Port is set below. */
+
+    /*
+     * The server port is 30000 plus the last
+     * three digits of the roll number.
+     */
+    int roll_length = strlen(argv[2]);
+
+    if (roll_length < 3) {
+        printf("Error: Invalid roll number.\n");
+        close(client_socket);
+        return 1;
+    }
+
+    for (int i = 0; argv[2][i] != '\0'; i++) {
+        if (argv[2][i] < '0' || argv[2][i] > '9') {
+            printf("Error: Roll number must be numeric.\n");
+            close(client_socket);
+            return 1;
+        }
+    }
+
+    int port = 30000 + atoi(argv[2] + roll_length - 3);
+
+    server_address.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, argv[1],
+                  &server_address.sin_addr) != 1) {
+
+        printf("Error: Invalid server IP address.\n");
+        close(client_socket);
+        return 1;
+    }
+
+    printf("Connected to server %s on port %d\n",
+           argv[1], port);
+
+    printf("Enter a request (type EXIT to quit):\n");
+
+    /*
+     * Repeatedly read, send and receive.
+     */
+    while (1) {
+
+        printf("> ");
+        fflush(stdout);
+
+        if (fgets(message, sizeof(message), stdin) == NULL) {
+
+            /*
+             * EOF: send EXIT before terminating.
+             */
+            strcpy(message, "EXIT");
+        }
+
+        message[strcspn(message, "\n")] = '\0';
+
+        /*
+         * Add roll number prefix.
+         */
+        int written = snprintf(request, sizeof(request),
+                               "%s#%s", argv[2], message);
+
+        if (written < 0 || written >= sizeof(request)) {
+            printf("Error: Request is too long.\n");
+            continue;
+        }
+
+        /*
+         * Send request to server.
+         */
+        if (sendto(client_socket, request, strlen(request),
+                   0, (struct sockaddr *)&server_address,
+                   server_length) < 0) {
+
+            perror("sendto");
+            break;
+        }
+
+        /*
+         * Receive response.
+         */
+        ssize_t received = recvfrom(
+            client_socket,
+            response,
+            sizeof(response) - 1,
+            0,
+            NULL,
+            NULL
+        );
+
+        if (received < 0) {
+            perror("recvfrom");
+            break;
+        }
+
+        response[received] = '\0';
+
+        printf("Server response: %s\n", response);
+
+        /*
+         * Terminate after sending EXIT.
+         */
+        if (strcmp(message, "EXIT") == 0)
+            break;
+    }
+
+    close(client_socket);
+
+    return 0;
+}
